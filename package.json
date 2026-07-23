@@ -1,7 +1,7 @@
 {
   "name": "lms-backend",
   "version": "1.0.0",
-  "description": "",
+  "description": "LMS backend API — Express/TypeScript/MongoDB, handles auth, courses, assignments, scheduling, and real-time chat.",
   "main": "index.js",
   "scripts": {
     "dev": "tsx watch --ignore \"uploads/**\" src/server.ts",

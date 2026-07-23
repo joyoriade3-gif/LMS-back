@@ -6,8 +6,9 @@ import { sendResponse } from '../utils/response.utils.js'
 import { hashPassword, comparePassword, hashOTP, compareOTP, generateOTP } from '../utils/hash.utils.js'
 import { signAccessToken, signRefreshToken, signResetToken, verifyResetToken } from '../utils/jwt.utils.js'
 import { sendOTPEmail, sendWelcomeEmail } from '../services/email.service.js'
-import { uploadLocalFileToCloudinary, uploadBase64ToCloudinary } from '../services/cloudinary.service.js'
+import { toPublicUrl, saveBase64File } from '../services/local-storage.service.js'
 import fs from 'fs'
+import path from 'path'
 import axios from 'axios'
  
 class AuthController {
@@ -71,10 +72,7 @@ class AuthController {
       let profilePicture = ''
       const avatarFile = files?.['avatar']?.[0]
       if (avatarFile) {
-        try {
-          profilePicture = await uploadLocalFileToCloudinary(avatarFile.path, 'image', 'avatars')
-          if (fs.existsSync(avatarFile.path)) fs.unlinkSync(avatarFile.path)
-        } catch {}
+        profilePicture = toPublicUrl(avatarFile) // stays on disk, served from /uploads
       }
  
       const hashedPassword = await hashPassword(password)
@@ -233,37 +231,28 @@ class AuthController {
  
       const files = req.files as Record<string, Express.Multer.File[]> | undefined
  
-      const uploadFile = async (field: string, folder: string, resourceType: 'image' | 'raw') => {
+      const uploadFile = (field: string): string | undefined => {
         const f = files?.[field]?.[0]
         if (!f) return undefined
-        try {
-          // For PDFs, cloudinary.service.ts automatically routes them through
-          // the image pipeline regardless of the resourceType passed here.
-          const url = await uploadLocalFileToCloudinary(f.path, resourceType === 'image' ? 'image' : 'raw', folder)
-          if (fs.existsSync(f.path)) fs.unlinkSync(f.path)
-          return url
-        } catch (err) {
-          console.error(`Failed to upload ${field}:`, err)
-          return undefined
-        }
+        return toPublicUrl(f)
       }
  
-      const avatarUrl = await uploadFile('avatar', 'avatars', 'image')
+      const avatarUrl = uploadFile('avatar')
       if (avatarUrl) { 
         updateData.avatar = avatarUrl
         updateData.img = avatarUrl
         updateData.profilePicture = avatarUrl
       }
  
-      const cvUrl = await uploadFile('cv', 'docs', 'raw')
+      const cvUrl = uploadFile('cv')
       if (cvUrl) updateData.cvUrl = cvUrl
  
-      const certUrl = await uploadFile('certification', 'docs', 'raw')
+      const certUrl = uploadFile('certification')
       if (certUrl) updateData.certificationUrl = certUrl
  
       if (req.body.imageStream) {
         try {
-          const url = await uploadBase64ToCloudinary(req.body.imageStream, 'image', 'avatars')
+          const url = saveBase64File(req.body.imageStream, 'avatars')
           updateData.avatar = url
           updateData.img = url
           updateData.profilePicture = url
@@ -327,13 +316,9 @@ class AuthController {
       if (!instructor) throw new ApiError('Instructor not found', 404);
       if (!instructor.cvUrl) throw new ApiError('CV not found for this instructor', 404);
       
-      // Convert raw URL to image URL
-      const fixedUrl = instructor.cvUrl.replace('/raw/upload/', '/image/upload/');
-      
-      console.log('✅ Viewing CV:', fixedUrl);
-      
-      // Redirect to Cloudinary
-      return res.redirect(fixedUrl);
+      // CVs are served straight from local disk now — no Cloudinary URL
+      // rewriting needed, the stored URL is already the real, viewable link.
+      return res.redirect(instructor.cvUrl);
       
     } catch (err) { 
       console.error('❌ Get CV error:', err);
@@ -349,15 +334,19 @@ class AuthController {
       const instructor = await userModel.findById(id);
       if (!instructor) throw new ApiError('Instructor not found', 404);
       if (!instructor.cvUrl) throw new ApiError('CV not found', 404);
-      
-      // Convert raw URL to image URL
-      const fixedUrl = instructor.cvUrl.replace('/raw/upload/', '/image/upload/');
-      const downloadUrl = `${fixedUrl}?fl_attachment=1`;
-      
-      console.log('✅ Downloading CV:', downloadUrl);
-      
-      // Redirect to Cloudinary with download flag
-      return res.redirect(downloadUrl);
+
+      // Stream the real file back with a Content-Disposition: attachment
+      // header, so the browser downloads the actual uploaded CV instead of
+      // just opening it — this is the local-disk equivalent of Cloudinary's
+      // `?fl_attachment=1` trick, which only worked for Cloudinary URLs.
+      const idx = instructor.cvUrl.indexOf('/uploads/');
+      if (idx === -1) throw new ApiError('CV file location is invalid', 500);
+      const relativePath = instructor.cvUrl.slice(idx + 1); // "uploads/documents/xxx.pdf"
+      const absolutePath = path.join(process.cwd(), relativePath);
+      if (!fs.existsSync(absolutePath)) throw new ApiError('CV file no longer exists on disk', 404);
+
+      const downloadName = `${instructor.fullName?.replace(/\s+/g, '_') || 'instructor'}-CV${path.extname(absolutePath)}`;
+      return res.download(absolutePath, downloadName);
       
     } catch (err) { 
       console.error('❌ Download CV error:', err);

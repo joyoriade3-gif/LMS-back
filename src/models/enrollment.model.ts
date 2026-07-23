@@ -7,7 +7,8 @@ export interface IEnrollment extends Document {
   instructor: mongoose.Types.ObjectId
   amountPaid: number
   paystackRef: string  // kept in schema for future payment support, always '' for now
-  status: 'pending' | 'active'
+  status: 'pending' | 'active' | 'dropped'
+  droppedAt?: Date
   createdAt: Date
 }
 
@@ -18,8 +19,9 @@ const enrollmentSchema = new Schema<IEnrollment>(
     instructor:  { type: Schema.Types.ObjectId, ref: 'User',   required: true },
     amountPaid:  { type: Number, default: 0 },
     paystackRef: { type: String, default: '' }, // kept for future payment re-integration
-    status:      { type: String, enum: ['pending', 'active'], default: 'active' },
+    status:      { type: String, enum: ['pending', 'active', 'dropped'], default: 'active' },
                  // ↑ default changed to 'active' since there's no payment step
+    droppedAt:   { type: Date, default: null }, // set when a student unenrolls — powers the dashboard's "left" trend
   },
   { timestamps: true }
 )
